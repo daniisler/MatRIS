@@ -1,22 +1,19 @@
-from typing import Literal, Union, Sequence
+from typing import Union, Sequence
 
 import torch
 from torch import Tensor, nn
 import os
 from collections.abc import Sequence
 
-from ..graph import RadiusGraph, GraphConverter, datatype
+from ..graph import RadiusGraph, GraphConverter
 from .reference_energy import AtomRef
 from .processgraph import process_graphs
 from .feature_embed import (
-    ThreebodyFourierExpansion, 
-    AtomTypeEmbedding, 
-    EdgeBasisEmbedding, 
+    AtomTypeEmbedding,
+    EdgeBasisEmbedding,
     ThreebodyEmbedding
 )
 from .functions import (
-    MLP,
-    GatedMLP,
     get_normalization
 )
 from .interaction_block import Interaction_Block
@@ -29,7 +26,7 @@ from .readout import (
 
 class MatRIS(nn.Module):
     """ Init MatRIS Potential """
-    
+
     def __init__(
         self,
         num_layers: int = 6,
@@ -38,8 +35,8 @@ class MatRIS(nn.Module):
         three_body_feat_dim: int = 128,
         mlp_hidden_dims: Union[int, Sequence[int]] = (128, 128),
         dropout: float = 0.0,
-        use_bias: bool = False, 
-        distance_expansion: str = "Bessel", 
+        use_bias: bool = False,
+        distance_expansion: str = "Bessel",
         three_body_expansion: str = "SH",
         num_radial: int = 7,
         num_angular: int = 7,
@@ -63,23 +60,23 @@ class MatRIS(nn.Module):
             node_feat_dim (int): atom feature embedding dim.
             edge_feat_dim (int): edge(pairwise) feature embedding dim.
             three_body_feat_dim (int): angle(three body) feature embedding dim.
-            mlp_hidden_dims (List or int): hidden dims of MLP. 
+            mlp_hidden_dims (List or int): hidden dims of MLP.
                 Can be 'int' or 'list'.
             dropout (float): dropout rate in MLP.
             use_bias (bool): whether use bias in Interaction block.
-            distance_expansion (str):  The function of pairwise basis. 
+            distance_expansion (str):  The function of pairwise basis.
                 Can be "Bessel" or "Gaussian".
-            three_body_expansion (str): The function of three body basis. 
+            three_body_expansion (str): The function of three body basis.
                 Can be "Fourier(fourier)" or "Spherical Harmonics(sh)".
             num_radial (int): number of radial basis used in Bessel and Gaussian basis.
             num_angular (int): number of three_body basis used in Fourier basis.
             max_l (int): Maximum l value for Spherical Harmonics basis (SH).
             max_n (int): Maximum n value for Spherical Harmonics basis (SH).
             envelope_exponent (int): exponent of 'PolynomialEnvelope'.
-            graph_conv_mlp (str): The type of MLP in mp layers. 
-                Can be "MLP", "GatedMLP" and "MoE". 
+            graph_conv_mlp (str): The type of MLP in mp layers.
+                Can be "MLP", "GatedMLP" and "MoE".
                 See fucntion.py for more informations.
-            activation_type (str): activation function. 
+            activation_type (str): activation function.
                 Can be "SiLU(silu)", "Sigmoid(sigmoid)", "ReLU(relu)"...
                 See fucntion.py for more informations.
             norm_type (str): normalization function used in MLP.
@@ -94,20 +91,20 @@ class MatRIS(nn.Module):
             reference_energy (str): refernece energy of 'str'(eg. MPtrj, OMat..) dataset(Caculated by linear regression).
                 more details can be found at reference_energy.py.
         """
-        
+
         super().__init__()
         # model configs
         self.config = { k: v for k, v in locals().items() if k not in ["self", "__class__"] }
 
         self.is_intensive = is_intensive
-        
+
         self.reference_energy = None
         if reference_energy is not None:
             self.reference_energy = AtomRef(
                 reference_energy=reference_energy,
                 is_intensive=is_intensive
-            ) 
-        
+            )
+
         # Define Graph Converter
         self.graph_converter = GraphConverter(
             atom_graph_cutoff=pairwise_cutoff,
@@ -135,7 +132,7 @@ class MatRIS(nn.Module):
         # ====== Interaction layers ========
         interaction_block = [
             Interaction_Block(
-                node_feat_dim=node_feat_dim, 
+                node_feat_dim=node_feat_dim,
                 edge_feat_dim=edge_feat_dim,
                 three_body_feat_dim=three_body_feat_dim,
                 num_radial=num_radial,
@@ -151,7 +148,7 @@ class MatRIS(nn.Module):
         ]
         self.interaction_block = nn.ModuleList(interaction_block)
 
-        # ====== Readout layers ======== 
+        # ====== Readout layers ========
         self.readout_norm = get_normalization(norm_type, dim=node_feat_dim)
 
         self.energy_head = EnergyHead(
@@ -176,7 +173,7 @@ class MatRIS(nn.Module):
             mlp_type = "mlp", # is_conservation == False
             activation_type = activation_type, # is_conservation == False
         )
-        
+
         if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
             print(f"MatRIS initialized with {self.get_params()} parameters")
 
@@ -194,14 +191,14 @@ class MatRIS(nn.Module):
         prediction = {}
         # ======== Graph processing ========
         batch_graph = process_graphs(graphs, compute_stress="s" in task)
-        
+
         # ======== Feature embedding ========
         node_feat = self.atom_embedding( batch_graph['atomic_numbers'] - 1 ) # atom type feature init (use 0 for 'H')
         edge_feat, smooth_weight = self.edge_embedding(graphs=batch_graph) # pairwise feature init
-        threebody_feat = None 
+        threebody_feat = None
         if len(batch_graph['line_graph_dict']['line_graph']) != 0:
             threebody_feat = self.three_body_embedding(graphs=batch_graph) # three body feature init
-        
+
         # ======== Interaction Block =======
         for mp_layer in self.interaction_block:
             node_feat, edge_feat, threebody_feat = mp_layer(
@@ -211,28 +208,28 @@ class MatRIS(nn.Module):
                 threebody_feat=threebody_feat,
                 smooth_weight=smooth_weight,
             )
-        
-        # ======== Readout Block ======= 
+
+        # ======== Readout Block =======
         node_feat = self.readout_norm(node_feat)
-        
+
         total_energy = self.energy_head(batch_graph = batch_graph, node_feat = node_feat)
-        
+
         force_stress_dict = self.force_stress_head(
-            batch_graph = batch_graph, 
+            batch_graph = batch_graph,
             compute_force="f" in task,
             compute_stress="s" in task,
-            total_energy = total_energy, 
-            node_feat = node_feat, 
-            edge_feat = edge_feat, 
+            total_energy = total_energy,
+            node_feat = node_feat,
+            edge_feat = edge_feat,
             is_training = is_training)
         prediction.update(force_stress_dict)
-        
+
         if "m" in task:
             magmom = self.magmom_head(batch_graph = batch_graph, node_feat = node_feat)
             prediction["m"] = magmom
-        
-        atoms_per_graph_tensor = torch.tensor(batch_graph['atoms_per_graph'], 
-                                                  dtype=torch.int32, 
+
+        atoms_per_graph_tensor = torch.tensor(batch_graph['atoms_per_graph'],
+                                                  dtype=torch.int32,
                                                   device=total_energy.device)
         if self.is_intensive:
             energy_per_atom = total_energy / atoms_per_graph_tensor
@@ -240,7 +237,7 @@ class MatRIS(nn.Module):
         else:
             prediction["e"] = total_energy
 
-        prediction["atoms_per_graph"] = atoms_per_graph_tensor 
+        prediction["atoms_per_graph"] = atoms_per_graph_tensor
 
         ref_energy = (
             0 if self.reference_energy is None else self.reference_energy(graphs)
@@ -248,7 +245,7 @@ class MatRIS(nn.Module):
         prediction["e"] += ref_energy
         prediction["ref_energy"] = ref_energy
         return prediction
-    
+
     def get_params(self) -> int:
         """Return the number of parameters in the model."""
         return sum(p.numel() for p in self.parameters())
@@ -258,7 +255,7 @@ class MatRIS(nn.Module):
         matris = MatRIS(**dct["config"])
         matris.load_state_dict(dct["state_dict"])
         return matris
-    
+
     @classmethod
     def load(
         cls,
@@ -273,8 +270,8 @@ class MatRIS(nn.Module):
 
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
-        
-        
+
+
         cache_dir = os.path.expanduser("~/.cache/matris")
         os.makedirs(cache_dir, exist_ok=True)
 
@@ -287,8 +284,8 @@ class MatRIS(nn.Module):
 
         DOWNLOAD_URLS = {
             "matris_10m_omat": "",  # TODO
-            "matris_10m_oam": "https://figshare.com/ndownloader/files/59142728",
-            "matris_10m_mp": "https://figshare.com/ndownloader/files/59143058",
+            "matris_10m_oam": "https://api.figshare.com/v2/file/download/59142728",
+            "matris_10m_mp": "https://api.figshare.com/v2/file/download/59143058",
             "matris_6m_mp": "",  # TODO
         }
 
@@ -302,16 +299,16 @@ class MatRIS(nn.Module):
 
             print(f"Checkpoint not found, downloading to {ckpt_path} ...")
             torch.hub.download_url_to_file(url, ckpt_path)
-        
-        
+
+
         ckpt_state = torch.load(
-            ckpt_path, 
-            map_location=torch.device("cpu"), 
+            ckpt_path,
+            map_location=torch.device("cpu"),
             weights_only=False
         )
         model = MatRIS.from_dict(ckpt_state)
-        
+
         model = model.to(device)
         print(f"Loading {model_name} successfully, running on {device}.")
-        
+
         return model
