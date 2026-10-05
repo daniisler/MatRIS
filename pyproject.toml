@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "matris"
-dynamic = ["version"]
+version = "0.1.0"
 authors = [
     {name = "HPC-AI-Team"},
 ]
@@ -16,7 +16,6 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
-    "License :: OSI Approved :: BSD License",
     "Operating System :: OS Independent",
 ]
 
@@ -34,4 +33,4 @@ Issues = "https://github.com/HPC-AI-Team/MatRIS/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["matris*"] 
+include = ["matris*"]
